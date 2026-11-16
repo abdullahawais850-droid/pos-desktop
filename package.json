@@ -1,11 +1,10 @@
 {
-  "name": "pos-desktop",
-  "version": "1.0.0",
-  "description": "Desktop POS System",
+  "name": "universal-pos-desktop",
+  "version": "2.0.0",
+  "description": "Configurable offline desktop point-of-sale system",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "electron .",
     "dist:win": "electron-builder --win nsis portable"
   },
   "author": "Abdullah Awais",
@@ -16,32 +15,10 @@
   },
   "build": {
     "appId": "com.abdullahawais850.posdesktop",
-    "productName": "POS Pro Desktop",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "**/*",
-      "!dist/**",
-      "!node_modules/.cache/**"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": ["x64"]
-        },
-        {
-          "target": "portable",
-          "arch": ["x64"]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    }
+    "productName": "Universal POS",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "index.html", "styles.css", "renderer.js", "package.json"],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "createStartMenuShortcut": true }
   }
 }
