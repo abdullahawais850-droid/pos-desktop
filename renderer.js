@@ -1,241 +1,158 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
-const fs = require('fs/promises');
-const path = require('path');
+const DEFAULT_STATE = {
+  settings: { businessName: 'My Business', businessType: 'General retail', currency: 'PKR', taxRate: 0, receiptFooter: 'Thank you for your business' },
+  products: [], customers: [], sales: []
+};
+let state = structuredClone(DEFAULT_STATE);
+let cart = [];
+let noticeTimer;
+const $ = (selector) => document.querySelector(selector);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (value) => new Intl.NumberFormat(undefined, { style: 'currency', currency: state.settings.currency || 'PKR' }).format(Number(value) || 0);
+const number = (value) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(Number(value) || 0);
+const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-const dataFile = () => path.join(app.getPath('userData'), 'pos-data.json');
-
-ipcMain.handle('data:load', async () => {
-  try {
-    return JSON.parse(await fs.readFile(dataFile(), 'utf8'));
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-});
-
-ipcMain.handle('data:save', async (_event, data) => {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('Invalid POS data');
-  }
-
-  const file = dataFile();
-  await fs.mkdir(path.dirname(file), { recursive: true });
-
-  const temporaryFile = `${file}.tmp`;
-  await fs.writeFile(temporaryFile, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(temporaryFile, file);
-
-  return true;
-});
-
-ipcMain.handle('receipt:print', async (event, sale, settings = {}) => {
-  if (!sale || !Array.isArray(sale.items)) {
-    throw new Error('Invalid receipt data');
-  }
-
-  const parent = BrowserWindow.fromWebContents(event.sender);
-  const prompt = await dialog.showMessageBox(parent || undefined, {
-    type: 'question',
-    title: 'Print bill slip?',
-    message: `Print the bill slip for sale ${String(sale.receipt || '')}?`,
-    buttons: ['Print', 'Cancel sale'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true
-  });
-
-  if (prompt.response !== 0) return false;
-
-  const escapeHtml = (value) =>
-    String(value ?? '').replace(/[&<>"']/g, (char) => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;'
-    }[char]));
-
-  const currencyCode = /^[A-Z]{3}$/.test(String(settings.currency || ''))
-    ? settings.currency
-    : 'PKR';
-
-  const money = (value) =>
-    new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currencyCode
-    }).format(Number(value) || 0);
-
-  const itemRows = sale.items.map((item) => {
-    const quantity = Number(item.quantity) || 0;
-    const price = Number(item.price) || 0;
-
-    return `
-      <tr>
-        <td>
-          ${escapeHtml(item.name)}
-          <small>${quantity} ${escapeHtml(item.unit || 'each')} × ${money(price)}</small>
-        </td>
-        <td class="amount">${money(quantity * price)}</td>
-      </tr>
-    `;
-  }).join('');
-
-  const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Receipt ${escapeHtml(sale.receipt)}</title>
-  <style>
-    @page { size: 80mm auto; margin: 4mm; }
-    * { box-sizing: border-box; }
-    body {
-      width: 72mm;
-      margin: 0 auto;
-      padding: 4mm 0;
-      color: #111;
-      font: 12px Arial, sans-serif;
-    }
-    header {
-      text-align: center;
-      border-bottom: 1px dashed #555;
-      padding-bottom: 10px;
-      margin-bottom: 10px;
-    }
-    h1 { font-size: 18px; margin: 0 0 5px; }
-    p { margin: 5px 0; }
-    .meta { font-size: 10px; color: #444; }
-    table { width: 100%; border-collapse: collapse; font-size: 11px; }
-    th, td { padding: 5px 0; vertical-align: top; text-align: left; }
-    th:last-child, .amount { text-align: right; white-space: nowrap; }
-    td small { display: block; color: #444; margin-top: 3px; }
-    .totals { border-top: 1px dashed #555; margin-top: 8px; padding-top: 7px; }
-    .totals p { display: flex; justify-content: space-between; }
-    .total { font-weight: bold; font-size: 14px; }
-    .footer {
-      text-align: center;
-      border-top: 1px dashed #555;
-      margin-top: 12px;
-      padding-top: 10px;
-      font-size: 10px;
-      white-space: pre-wrap;
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>${escapeHtml(settings.businessName || 'My Business')}</h1>
-    <p>${escapeHtml(settings.businessType || '')}</p>
-  </header>
-
-  <p class="meta">Receipt: ${escapeHtml(sale.receipt)}</p>
-  <p class="meta">Date: ${escapeHtml(new Date(sale.createdAt || Date.now()).toLocaleString())}</p>
-  <p class="meta">Buyer: ${escapeHtml(sale.customerName || 'Walk-in customer')}</p>
-  <p class="meta">Payment: ${escapeHtml(sale.payment || '')}</p>
-
-  <table>
-    <thead>
-      <tr><th>Item / quantity</th><th>Amount</th></tr>
-    </thead>
-    <tbody>${itemRows}</tbody>
-  </table>
-
-  <div class="totals">
-    <p><span>Subtotal</span><span>${money(sale.subtotal)}</span></p>
-    <p><span>Discount</span><span>−${money(sale.discount)}</span></p>
-    <p><span>Tax</span><span>${money(sale.tax)}</span></p>
-    <p class="total"><span>TOTAL</span><span>${money(sale.total)}</span></p>
-  </div>
-
-  <div class="footer">${escapeHtml(settings.receiptFooter || 'Thank you for your business')}</div>
-</body>
-</html>`;
-
-  const printWindow = new BrowserWindow({
-    show: false,
-    width: 420,
-    height: 700,
-    autoHideMenuBar: true,
-    parent,
-    webPreferences: {
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  });
-
-  try {
-    await printWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-    );
-
-    return await new Promise((resolve) => {
-      printWindow.webContents.print(
-        { silent: false, printBackground: true },
-        (success, failureReason) => {
-          if (!success && failureReason) {
-            console.error('Receipt printing failed:', failureReason);
-          }
-          resolve(Boolean(success));
-        }
-      );
-    });
-  } finally {
-    if (!printWindow.isDestroyed()) {
-      printWindow.close();
-    }
-  }
-});
-
-ipcMain.handle('report:export', async (_event, report) => {
-  const result = await dialog.showSaveDialog({
-    title: 'Export POS data',
-    defaultPath: `pos-export-${new Date().toISOString().slice(0, 10)}.json`,
-    filters: [{ name: 'JSON', extensions: ['json'] }]
-  });
-
-  if (result.canceled || !result.filePath) return false;
-
-  await fs.writeFile(
-    result.filePath,
-    JSON.stringify(report, null, 2),
-    'utf8'
-  );
-
-  return true;
-});
-
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 1050,
-    minHeight: 700,
-    title: 'Universal POS',
-    backgroundColor: '#f4f6fb',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    }
-  });
-
-  win.loadFile(path.join(__dirname, 'index.html'));
-  Menu.setApplicationMenu(null);
+function notify(message, type = 'success') {
+  const box = $('#notice'); box.textContent = message; box.className = `notice show ${type}`;
+  clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { box.className = 'notice'; }, 3500);
 }
-
-app.whenReady().then(() => {
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+async function persist() {
+  try { await window.posAPI.save(state); return true; }
+  catch (error) { notify(`Could not save data: ${error.message}`, 'error'); return false; }
+}
+function showView(name) {
+  document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === name));
+  document.querySelectorAll('.nav-link').forEach((button) => button.classList.toggle('active', button.dataset.view === name));
+  const labels = { dashboard: 'Overview', sales: 'Point of sale', products: 'Products & services', inventory: 'Inventory', customers: 'Customers', history: 'Sales history', settings: 'Business settings' };
+  $('#pageTitle').textContent = labels[name] || 'Overview';
+  if (name === 'sales') renderCatalog();
+}
+function refresh() {
+  $('#businessLabel').textContent = state.settings.businessType;
+  $('#businessTypeHeading').textContent = `${state.settings.businessType.toUpperCase()} OVERVIEW`;
+  $('#todayLabel').textContent = new Date().toLocaleDateString();
+  renderDashboard(); renderProducts(); renderInventory(); renderCustomers(); renderSalesHistory(); renderCustomerOptions(); renderCategories(); renderCart();
+}
+function renderDashboard() {
+  const day = new Date().toISOString().slice(0, 10);
+  const todays = state.sales.filter((sale) => String(sale.createdAt).slice(0, 10) === day);
+  $('#metricRevenue').textContent = money(todays.reduce((sum, sale) => sum + sale.total, 0));
+  $('#metricOrders').textContent = String(todays.length);
+  $('#metricProducts').textContent = String(state.products.filter((item) => item.active !== false).length);
+  const low = state.products.filter((item) => item.trackStock && Number(item.stock) <= Number(item.reorderLevel));
+  $('#metricLowStock').textContent = String(low.length);
+  $('#recentSales').innerHTML = state.sales.length ? state.sales.slice(0, 6).map((sale) => `<div class="row"><div class="row-main"><b>Receipt ${esc(sale.receipt)}</b><small>${esc(new Date(sale.createdAt).toLocaleString())} · ${esc(sale.payment)}</small></div><span class="row-end">${money(sale.total)}</span></div>`).join('') : '<div class="empty">No sales yet.</div>';
+  $('#lowStockList').innerHTML = low.length ? low.slice(0, 6).map((item) => `<div class="row"><div class="row-main"><b>${esc(item.name)}</b><small>Reorder at ${number(item.reorderLevel)} ${esc(item.unit)}</small></div><span class="badge low">${number(item.stock)} left</span></div>`).join('') : '<div class="empty">No low-stock items.</div>';
+}
+function renderCategories() {
+  const select = $('#categoryFilter'); const current = select.value;
+  const categories = [...new Set(state.products.map((item) => item.category).filter(Boolean))].sort();
+  select.innerHTML = '<option value="">All categories</option>' + categories.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  if (categories.includes(current)) select.value = current;
+}
+function renderCatalog() {
+  const query = $('#productSearch').value.trim().toLowerCase(); const category = $('#categoryFilter').value;
+  const products = state.products.filter((item) => item.active !== false && (!category || item.category === category) && (!query || `${item.name} ${item.sku} ${item.category}`.toLowerCase().includes(query)));
+  $('#catalog').innerHTML = products.length ? products.map((item) => `<button class="catalog-item" data-add="${esc(item.id)}"><b>${esc(item.name)}</b><small>${esc(item.category || 'Uncategorized')} · ${esc(item.unit || 'each')}${item.trackStock ? ` · ${number(item.stock)} available` : ''}</small><strong>${money(item.price)}</strong></button>`).join('') : '<div class="empty">No matching items. Add products or services first.</div>';
+}
+function renderCart() {
+  const count = cart.reduce((sum, line) => sum + line.quantity, 0);
+  $('#cartCount').textContent = count ? `${number(count)} item${count === 1 ? '' : 's'}` : 'No items yet';
+  $('#cartLines').innerHTML = cart.length ? cart.map((line) => `<div class="cart-line"><div><div class="cart-name">${esc(line.name)}</div><div class="cart-meta">${money(line.price)} · ${esc(line.unit)}</div></div><div class="quantity"><button data-qty="-1" data-id="${esc(line.id)}">−</button><b>${number(line.quantity)}</b><button data-qty="1" data-id="${esc(line.id)}">+</button><button class="icon-button" data-remove="${esc(line.id)}">×</button></div></div>`).join('') : '<div class="empty">Choose a catalog item to add it to this sale.</div>';
+  const subtotal = cart.reduce((sum, line) => sum + line.price * line.quantity, 0);
+  const discount = Math.min(subtotal, Math.max(0, Number($('#discountInput').value) || 0));
+  const tax = Math.max(0, subtotal - discount) * Math.max(0, Number(state.settings.taxRate) || 0) / 100;
+  $('#subtotal').textContent = money(subtotal); $('#taxTotal').textContent = money(tax); $('#grandTotal').textContent = money(subtotal - discount + tax); $('#discountCurrency').textContent = state.settings.currency;
+}
+function addToCart(id) {
+  const product = state.products.find((item) => item.id === id); if (!product) return;
+  const line = cart.find((item) => item.id === id); const next = (line?.quantity || 0) + 1;
+  if (product.trackStock && next > Number(product.stock)) return notify(`Only ${number(product.stock)} ${product.unit} in stock.`, 'error');
+  if (line) line.quantity = next; else cart.push({ id, name: product.name, price: Number(product.price), unit: product.unit || 'each', quantity: 1 });
+  renderCart();
+}
+function renderProducts() {
+  $('#productsTable').innerHTML = state.products.length ? state.products.map((item) => `<tr><td><b>${esc(item.name)}</b><br><span>${esc(item.unit || 'each')}</span></td><td>${esc(item.category || '—')}</td><td>${esc(item.sku || '—')}</td><td>${money(item.price)}</td><td>${item.trackStock ? number(item.stock) : 'Not tracked'}</td><td><button class="button quiet" data-delete-product="${esc(item.id)}">Remove</button></td></tr>`).join('') : '<tr><td colspan="6" class="empty">Catalog is empty.</td></tr>';
+}
+function renderInventory() {
+  const items = state.products.filter((item) => item.trackStock);
+  $('#inventoryTable').innerHTML = items.length ? items.map((item) => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.category || '—')}</td><td>${number(item.stock)} ${esc(item.unit)}</td><td>${number(item.reorderLevel)}</td><td><span class="badge ${Number(item.stock) <= Number(item.reorderLevel) ? 'low' : 'ok'}">${Number(item.stock) <= Number(item.reorderLevel) ? 'Reorder' : 'In stock'}</span></td><td><div class="stock-adjust"><input type="number" step="0.001" min="0" placeholder="Qty" data-stock-value="${esc(item.id)}"><button data-stock="${esc(item.id)}" data-delta="1">Add</button><button data-stock="${esc(item.id)}" data-delta="-1">Remove</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No tracked inventory.</td></tr>';
+}
+function renderCustomers() {
+  $('#customersList').innerHTML = state.customers.length ? state.customers.map((c) => `<div class="row"><div class="row-main"><b>${esc(c.name)}</b><small>${esc(c.phone || 'No phone')} · ${esc(c.email || 'No email')}</small></div><button class="button quiet" data-delete-customer="${esc(c.id)}">Remove</button></div>`).join('') : '<div class="empty">No saved customers.</div>';
+}
+function renderCustomerOptions() {
+  const select = $('#saleCustomer'); const current = select.value;
+  select.innerHTML = '<option value="">Walk-in customer</option>' + state.customers.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  if (state.customers.some((c) => c.id === current)) select.value = current;
+}
+function renderSalesHistory() {
+  $('#salesTable').innerHTML = state.sales.length ? state.sales.map((sale) => `<tr><td>${esc(sale.receipt)}</td><td>${esc(new Date(sale.createdAt).toLocaleString())}</td><td>${esc(sale.customerName || 'Walk-in')}</td><td>${esc(sale.payment)}</td><td>${number(sale.items.reduce((sum, item) => sum + item.quantity, 0))}</td><td><b>${money(sale.total)}</b></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No completed sales yet.</td></tr>';
+}
+async function completeSale() {
+  if (!cart.length) return notify('Add at least one item before completing a sale.', 'error');
+  const subtotal = cart.reduce((sum, line) => sum + line.price * line.quantity, 0);
+  const discount = Math.min(subtotal, Math.max(0, Number($('#discountInput').value) || 0));
+  const tax = (subtotal - discount) * Math.max(0, Number(state.settings.taxRate) || 0) / 100;
+  const customer = state.customers.find((item) => item.id === $('#saleCustomer').value);
+  for (const line of cart) {
+    const product = state.products.find((item) => item.id === line.id);
+    if (product?.trackStock && line.quantity > Number(product.stock)) return notify(`Insufficient stock for ${product.name}.`, 'error');
   }
-});
+  const sale = { receipt: `R-${Date.now().toString().slice(-8)}`, createdAt: new Date().toISOString(), customerName: customer?.name || '', payment: $('#paymentMethod').value, subtotal, discount, tax, total: subtotal - discount + tax, items: cart.map((line) => ({ ...line })) };
+  $('#completeSale').disabled = true;
+  try {
+    const printed = await window.posAPI.printReceipt(sale, state.settings);
+    if (!printed) return notify('Printing cancelled or failed. Sale was not recorded.', 'error');
+    const oldStocks = new Map(state.products.map((p) => [p.id, p.stock]));
+    for (const line of cart) { const p = state.products.find((x) => x.id === line.id); if (p?.trackStock) p.stock = Number(p.stock) - line.quantity; }
+    state.sales.unshift(sale);
+    try { await window.posAPI.save(state); }
+    catch (error) {
+      state.sales = state.sales.filter((x) => x.receipt !== sale.receipt);
+      for (const p of state.products) p.stock = oldStocks.get(p.id);
+      return notify(`Could not save sale: ${error.message}`, 'error');
+    }
+    cart = []; $('#discountInput').value = '0'; $('#saleCustomer').value = ''; refresh(); notify(`Printed and recorded ${sale.receipt}.`);
+  } catch (error) { notify(`Printing failed; sale not recorded: ${error.message}`, 'error'); }
+  finally { $('#completeSale').disabled = false; }
+}
+function loadSettingsForm() {
+  const form = $('#settingsForm');
+  for (const key of ['businessName', 'businessType', 'currency', 'taxRate', 'receiptFooter']) form.elements[key].value = state.settings[key] ?? '';
+}
+function bindEvents() {
+  $('#navigation').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (b) showView(b.dataset.view); });
+  document.body.addEventListener('click', (e) => {
+    const go = e.target.closest('[data-go]'); if (go) showView(go.dataset.go);
+    const add = e.target.closest('[data-add]'); if (add) addToCart(add.dataset.add);
+    const qty = e.target.closest('[data-qty]');
+    if (qty) { const line = cart.find((x) => x.id === qty.dataset.id); if (!line) return; const product = state.products.find((x) => x.id === line.id); const next = line.quantity + Number(qty.dataset.qty); if (next > 0 && product?.trackStock && next > Number(product.stock)) return notify(`Only ${number(product.stock)} in stock.`, 'error'); if (next <= 0) cart = cart.filter((x) => x !== line); else line.quantity = next; renderCart(); }
+    const remove = e.target.closest('[data-remove]'); if (remove) { cart = cart.filter((x) => x.id !== remove.dataset.remove); renderCart(); }
+    const deleteProduct = e.target.closest('[data-delete-product]'); if (deleteProduct) { const id = deleteProduct.dataset.deleteProduct; state.products = state.products.filter((x) => x.id !== id); cart = cart.filter((x) => x.id !== id); persist().then(refresh); }
+    const deleteCustomer = e.target.closest('[data-delete-customer]'); if (deleteCustomer) { state.customers = state.customers.filter((x) => x.id !== deleteCustomer.dataset.deleteCustomer); persist().then(refresh); }
+    const stockButton = e.target.closest('[data-stock]');
+    if (stockButton) { const p = state.products.find((x) => x.id === stockButton.dataset.stock); const input = document.querySelector(`[data-stock-value="${CSS.escape(stockButton.dataset.stock)}"]`); const amount = Number(input.value); if (!p || !Number.isFinite(amount) || amount <= 0) return notify('Enter a stock quantity greater than zero.', 'error'); p.stock = Math.max(0, Number(p.stock) + amount * Number(stockButton.dataset.delta)); persist().then(refresh); }
+  });
+  $('#topNewSale').addEventListener('click', () => showView('sales'));
+  $('#productSearch').addEventListener('input', renderCatalog); $('#categoryFilter').addEventListener('change', renderCatalog);
+  $('#discountInput').addEventListener('input', renderCart);
+  $('#clearCart').addEventListener('click', () => { cart = []; $('#discountInput').value = '0'; renderCart(); });
+  $('#completeSale').addEventListener('click', completeSale);
+  $('#productForm').addEventListener('submit', async (e) => {
+    e.preventDefault(); const form = e.currentTarget; const data = new FormData(form); const price = Number(data.get('price')); const cost = Number(data.get('cost') || 0); const trackStock = form.elements.trackStock.checked;
+    if (!Number.isFinite(price) || price < 0 || !Number.isFinite(cost) || cost < 0) return notify('Enter valid non-negative prices.', 'error');
+    state.products.push({ id: uid(), name: data.get('name').trim(), sku: data.get('sku').trim(), category: data.get('category').trim(), unit: data.get('unit').trim() || 'each', price, cost, trackStock, stock: trackStock ? Number(data.get('stock') || 0) : 0, reorderLevel: Number(data.get('reorderLevel') || 0), active: true });
+    form.reset(); form.elements.unit.value = 'each'; form.elements.cost.value = '0'; form.elements.reorderLevel.value = '5'; form.elements.trackStock.checked = true; if (await persist()) { refresh(); notify('Catalog entry added.'); }
+  });
+  $('#customerForm').addEventListener('submit', async (e) => { e.preventDefault(); const d = new FormData(e.currentTarget); state.customers.push({ id: uid(), name: d.get('name').trim(), phone: d.get('phone').trim(), email: d.get('email').trim() }); e.currentTarget.reset(); if (await persist()) { refresh(); notify('Customer added.'); } });
+  $('#settingsForm').addEventListener('submit', async (e) => { e.preventDefault(); const d = new FormData(e.currentTarget); const next = { businessName: d.get('businessName').trim(), businessType: d.get('businessType'), currency: d.get('currency').trim().toUpperCase(), taxRate: Number(d.get('taxRate') || 0), receiptFooter: d.get('receiptFooter').trim() }; if (!/^[A-Z]{3}$/.test(next.currency)) return notify('Currency must be a three-letter code, such as PKR or USD.', 'error'); state.settings = next; if (await persist()) { refresh(); loadSettingsForm(); notify('Business settings saved.'); } });
+  $('#exportButton').addEventListener('click', async () => { try { if (await window.posAPI.export({ exportedAt: new Date().toISOString(), ...state })) notify('Data export saved.'); } catch (error) { notify(`Export failed: ${error.message}`, 'error'); } });
+}
+async function init() {
+  try {
+    const saved = await window.posAPI.load();
+    if (saved && typeof saved === 'object') state = { ...structuredClone(DEFAULT_STATE), ...saved, settings: { ...DEFAULT_STATE.settings, ...(saved.settings || {}) }, products: Array.isArray(saved.products) ? saved.products : [], customers: Array.isArray(saved.customers) ? saved.customers : [], sales: Array.isArray(saved.sales) ? saved.sales : [] };
+  } catch (error) { notify(`Could not load saved data: ${error.message}`, 'error'); }
+  bindEvents(); refresh(); loadSettingsForm();
+}
+init();
