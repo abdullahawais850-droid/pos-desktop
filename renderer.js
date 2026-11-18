@@ -1,5 +1,5 @@
 const DEFAULT_STATE = {
-  settings: { businessName: 'My Business', businessType: 'Glasses store', currency: 'PKR', taxRate: 0, receiptFooter: 'Thank you for your business', overviewCleared: false, demoGlassesSeeded: false },
+  settings: { businessName: 'My Business', businessType: 'Glasses store', currency: 'PKR', taxRate: 0, receiptFooter: 'Thank you for your business', overviewCleared: false, demoGlassesSeeded: false, demoCustomersSeeded: false },
   products: [], customers: [], sales: []
 };
 let state = structuredClone(DEFAULT_STATE);
@@ -68,15 +68,14 @@ function renderDashboard() {
   $('#lowStockList').innerHTML = low.length ? low.slice(0, 6).map((item) => `<div class="row"><div class="row-main"><b>${esc(item.name)}</b><small>Reorder at ${number(item.reorderLevel)} ${esc(item.unit)}</small></div><span class="badge low">${number(item.stock)} left</span></div>`).join('') : '<div class="empty">No overview reminders to show.</div>';
   let button = $('#clearOverviewButton');
   if (!button) {
-    button = document.createElement('button'); button.id = 'clearOverviewButton'; button.type = 'button'; button.className = 'button quiet';
-    button.style.cssText = 'display:block;margin:0 0 14px auto';
+    button = document.createElement('button'); button.id = 'clearOverviewButton'; button.type = 'button'; button.className = 'button quiet'; button.style.cssText = 'display:block;margin:0 0 14px auto';
     $('#dashboard').prepend(button);
     button.addEventListener('click', async () => {
       state.settings.overviewCleared = !state.settings.overviewCleared;
       if (await persist()) { renderDashboard(); notify(state.settings.overviewCleared ? 'Overview cleared. All system records are preserved.' : 'Overview data restored.'); }
     });
   }
-  button.textContent = cleared ? 'Restore overview' : 'Clear overview only';
+  button.textContent = state.settings.overviewCleared ? 'Restore overview' : 'Clear overview only';
 }
 function renderCategories() {
   const select = $('#categoryFilter'); const current = select.value;
@@ -127,7 +126,7 @@ function renderInventory() {
   $('#inventoryTable').innerHTML = items.length ? items.map((item) => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.category || '—')}</td><td>${number(item.stock)} ${esc(item.unit)}</td><td>${number(item.reorderLevel)}</td><td><span class="badge ${Number(item.stock) <= Number(item.reorderLevel) ? 'low' : 'ok'}">${Number(item.stock) <= Number(item.reorderLevel) ? 'Reorder' : 'In stock'}</span></td><td><div class="stock-adjust"><input type="number" step="0.001" min="0" placeholder="Qty" data-stock-value="${esc(item.id)}"><button data-stock="${esc(item.id)}" data-delta="1">Add</button><button data-stock="${esc(item.id)}" data-delta="-1">Remove</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No tracked inventory.</td></tr>';
 }
 function renderCustomers() {
-  $('#customersList').innerHTML = state.customers.length ? state.customers.map((c) => `<div class="row"><div class="row-main"><b>${esc(c.name)}</b><small>${esc(c.phone || 'No phone')} · ${esc(c.email || 'No email')}</small></div><button class="button quiet" data-delete-customer="${esc(c.id)}">Remove</button></div>`).join('') : '<div class="empty">No saved customers.</div>';
+  $('#customersList').innerHTML = state.customers.length ? state.customers.map((c) => `<div class="row"><div class="row-main"><b>${esc(c.name)}</b><small>${esc(c.phone || 'No phone')} · ${esc(c.email || 'No email')}${c.demo ? ' · Test customer' : ''}</small></div><button class="button quiet" data-delete-customer="${esc(c.id)}">Remove</button></div>`).join('') : '<div class="empty">No saved customers.</div>';
 }
 function renderCustomerOptions() {
   const select = $('#saleCustomer'); const current = select.value;
@@ -143,26 +142,18 @@ function refresh() {
 function receiptMarkup(sale) {
   return `<div class="receipt-heading"><h2>${esc(state.settings.businessName || 'My Business')}</h2><div>${esc(state.settings.businessType || '')}</div><hr><div>Receipt: ${esc(sale.receipt)}</div><div>${esc(new Date(sale.createdAt).toLocaleString())}</div><div>Customer: ${esc(sale.customerName || 'Walk-in customer')}</div><div>Payment: ${esc(sale.payment)}</div></div><table class="receipt-table"><thead><tr><th>Item / barcode</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>${sale.items.map((item) => `<tr><td>${esc(item.name)}<small>${esc(item.barcode || item.sku || '—')}</small></td><td>${number(item.quantity)}</td><td>${money(item.price)}</td><td>${money(item.price * item.quantity)}</td></tr>`).join('')}</tbody></table><div class="receipt-total-row"><span>Subtotal</span><b>${money(sale.subtotal)}</b></div><div class="receipt-total-row"><span>Discount</span><b>−${money(sale.discount)}</b></div><div class="receipt-total-row"><span>Tax</span><b>${money(sale.tax)}</b></div><div class="receipt-total-row receipt-grand"><span>Total</span><b>${money(sale.total)}</b></div><div class="receipt-thanks">${esc(state.settings.receiptFooter || 'Thank you for your business')}</div>`;
 }
-function dismissReceipt() {
-  pendingSale = null; $('#receiptPreview').hidden = true; $('#receiptPreviewContent').innerHTML = '';
-}
+function dismissReceipt() { pendingSale = null; $('#receiptPreview').hidden = true; $('#receiptPreviewContent').innerHTML = ''; }
 async function printPendingSale() {
   if (!pendingSale) return;
-  const sale = pendingSale;
-  const printButton = $('#printReceiptButton'); printButton.disabled = true;
+  const sale = pendingSale; const printButton = $('#printReceiptButton'); printButton.disabled = true;
   try {
     const printed = await window.posAPI.printReceipt(sale, state.settings);
     if (!printed) { notify('Print was cancelled or failed; sale was not recorded.', 'error'); return; }
     const oldStocks = new Map(state.products.map((p) => [p.id, p.stock]));
     for (const line of sale.items) { const product = state.products.find((p) => p.id === line.id); if (product?.trackStock) product.stock = Number(product.stock) - line.quantity; }
     state.sales.unshift(sale);
-    if (!await persist()) {
-      state.sales = state.sales.filter((item) => item.receipt !== sale.receipt);
-      for (const product of state.products) product.stock = oldStocks.get(product.id);
-      return;
-    }
-    cart = []; $('#discountInput').value = '0'; $('#saleCustomer').value = '';
-    dismissReceipt(); refresh(); notify(`Printed bill and recorded ${sale.receipt}.`);
+    if (!await persist()) { state.sales = state.sales.filter((item) => item.receipt !== sale.receipt); for (const product of state.products) product.stock = oldStocks.get(product.id); return; }
+    cart = []; $('#discountInput').value = '0'; $('#saleCustomer').value = ''; dismissReceipt(); refresh(); notify(`Printed bill and recorded ${sale.receipt}.`);
   } catch (error) { notify(`Print failed; sale was not recorded: ${error.message}`, 'error'); }
   finally { printButton.disabled = false; }
 }
@@ -175,9 +166,7 @@ async function completeSale() {
   const items = cart.map((line) => ({ ...line }));
   for (const line of items) { const product = state.products.find((item) => item.id === line.id); if (product?.trackStock && line.quantity > Number(product.stock)) return notify(`Insufficient stock for ${product.name}.`, 'error'); }
   pendingSale = { receipt: `R-${Date.now().toString().slice(-8)}`, createdAt: new Date().toISOString(), customerName: customer?.name || '', payment: $('#paymentMethod').value, subtotal, discount, tax, total: subtotal - discount + tax, items };
-  $('#receiptPreviewContent').innerHTML = receiptMarkup(pendingSale);
-  $('#receiptPreview').hidden = false;
-  $('#printReceiptButton').focus();
+  $('#receiptPreviewContent').innerHTML = receiptMarkup(pendingSale); $('#receiptPreview').hidden = false; $('#printReceiptButton').focus();
 }
 function loadSettingsForm() {
   const form = $('#settingsForm');
@@ -189,12 +178,20 @@ function seedDemoGlasses() {
   const colors = ['Black', 'Tortoise', 'Silver', 'Gold', 'Blue', 'Clear', 'Brown', 'Rose'];
   const products = [];
   for (let i = 0; i < 100; i += 1) {
-    const n = i + 1; const style = styles[i % styles.length]; const color = colors[Math.floor(i / styles.length) % colors.length];
-    const barcode = `890700${String(n).padStart(6, '0')}`;
+    const n = i + 1; const style = styles[i % styles.length]; const color = colors[Math.floor(i / styles.length) % colors.length]; const barcode = `890700${String(n).padStart(6, '0')}`;
     products.push({ id: `demo-glasses-${String(n).padStart(3, '0')}`, name: `${style} ${color} Glasses ${String(n).padStart(3, '0')}`, sku: barcode, barcode, category: i % 4 === 0 ? 'Sunglasses' : 'Eyeglasses', unit: 'each', price: 1500 + (i % 20) * 250, cost: 900 + (i % 15) * 120, trackStock: true, stock: 10 + (i % 31), reorderLevel: 3, active: true, demo: true });
   }
-  state.products.push(...products);
-  state.settings.demoGlassesSeeded = true;
+  state.products.push(...products); state.settings.demoGlassesSeeded = true;
+  return true;
+}
+function seedDemoCustomers() {
+  if (state.settings.demoCustomersSeeded) return false;
+  const names = ['Ahmed Khan', 'Ayesha Malik', 'Hassan Ali', 'Fatima Noor', 'Usman Tariq', 'Zainab Raza', 'Bilal Sheikh', 'Sara Ahmed', 'Hamza Javed', 'Mariam Hussain', 'Ali Raza', 'Iqra Shah', 'Omar Farooq', 'Hira Iqbal', 'Daniyal Akhtar'];
+  const domains = ['example.com', 'example.pk'];
+  const customers = names.map((name, i) => {
+    const slug = name.toLower??
+  });
+  state.customers.push(...customers); state.settings.demoCustomersSeeded = true;
   return true;
 }
 function bindEvents() {
@@ -210,44 +207,26 @@ function bindEvents() {
     const stockButton = e.target.closest('[data-stock]');
     if (stockButton) { const p = state.products.find((x) => x.id === stockButton.dataset.stock); const input = document.querySelector(`[data-stock-value="${CSS.escape(stockButton.dataset.stock)}"]`); const amount = Number(input?.value); if (!p || !Number.isFinite(amount) || amount <= 0) return notify('Enter a stock quantity greater than zero.', 'error'); p.stock = Math.max(0, Number(p.stock) + amount * Number(stockButton.dataset.delta)); persist().then(() => refresh()); }
   });
-  $('#topNewSale').addEventListener('click', () => showView('sales'));
-  $('#productSearch').addEventListener('input', renderCatalog);
-  $('#productSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); scanIntoSale(); } });
-  $('#categoryFilter').addEventListener('change', renderCatalog);
-  $('#discountInput').addEventListener('input', renderCart);
-  $('#clearCart').addEventListener('click', () => { cart = []; $('#discountInput').value = '0'; renderCart(); });
-  $('#completeSale').addEventListener('click', completeSale);
-  $('#closeReceiptPreview').addEventListener('click', dismissReceipt);
-  $('#cancelReceipt').addEventListener('click', dismissReceipt);
-  $('#printReceiptButton').addEventListener('click', printPendingSale);
-  $('#receiptPreview').addEventListener('click', (e) => { if (e.target.id === 'receiptPreview') dismissReceipt(); });
+  $('#topNewSale').addEventListener('click', () => showView('sales')); $('#productSearch').addEventListener('input', renderCatalog); $('#productSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventEvent(); scanIntoSale(); } }); $('#categoryFilter').addEventListener('change', renderCatalog); $('#discountInput').addEventListener('input', renderCart); $('#clearCart').addEventListener('click', () => { cart = []; $('#discountInput').value = '0'; renderCart(); }); $('#completeSale').addEventListener('click', completeSale); $('#closeReceiptPreview').addEventListener('click', dismissReceipt); $('#cancelReceipt').addEventListener('click', dismissReceipt); $('#printReceiptButton').addEventListener('click', printPendingSale); $('#receiptPreview').addEventListener('click', (e) => { if (e.target.id === 'receiptPreview') dismissReceipt(); });
   $('#productForm').addEventListener('submit', async (e) => {
     e.preventDefault(); const form = e.currentTarget; const data = new FormData(form); const price = Number(data.get('price')); const cost = Number(data.get('cost') || 0); const trackStock = form.elements.trackStock.checked;
     if (!Number.isFinite(price) || price < 0 || !Number.isFinite(cost) || cost < 0) return notify('Enter valid non-negative prices.', 'error');
-    const sku = data.get('sku').trim();
-    if (sku && state.products.some((p) => [p.sku, p.barcode].some((code) => String(code || '').toLowerCase() === sku.toLowerCase()))) return notify('That barcode/SKU already belongs to another item.', 'error');
+    const sku = data.get('sku').trim(); if (sku && state.products.some((p) => [p.sku, p.barcode].some((code) => String(code || '').toLowerCase() === sku.toLowerCase()))) return notify('That barcode/SKU already belongs to another item.', 'error');
     state.products.push({ id: uid(), name: data.get('name').trim(), sku, barcode: sku, category: data.get('category').trim(), unit: data.get('unit').trim() || 'each', price, cost, trackStock, stock: trackStock ? Number(data.get('stock') || 0) : 0, reorderLevel: Number(data.get('reorderLevel') || 0), active: true });
     form.reset(); form.elements.unit.value = 'each'; form.elements.cost.value = '0'; form.elements.reorderLevel.value = '5'; form.elements.trackStock.checked = true;
     if (await persist()) { refresh(); notify('Catalog entry added.'); }
   });
   $('#customerForm').addEventListener('submit', async (e) => { e.preventDefault(); const d = new FormData(e.currentTarget); state.customers.push({ id: uid(), name: d.get('name').trim(), phone: d.get('phone').trim(), email: d.get('email').trim() }); e.currentTarget.reset(); if (await persist()) { refresh(); notify('Customer added.'); } });
-  $('#settingsForm').addEventListener('submit', async (e) => {
-    e.preventDefault(); const d = new FormData(e.currentTarget);
-    const next = { ...state.settings, businessName: d.get('businessName').trim(), businessType: d.get('businessType'), currency: d.get('currency').trim().toUpperCase(), taxRate: Number(d.get('taxRate') || 0), receiptFooter: d.get('receiptFooter').trim() };
-    if (!/^[A-Z]{3}$/.test(next.currency)) return notify('Currency must be a three-letter code, such as PKR or USD.', 'error');
-    state.settings = next;
-    if (await persist()) { refresh(); loadSettingsForm(); notify('Business settings saved.'); }
-  });
+  $('#settingsForm').addEventListener('submit', async (e) => { e.preventDefault(); const d = new FormData(e.currentTarget); const next = { ...state.settings, businessName: d.get('businessName').trim(), businessType: d.get('businessType'), currency: d.get('currency').trim().toUpperCase(), taxRate: Number(d.get('taxRate') || 0), receiptFooter: d.get('receiptFooter').trim() }; if (!/^[A-Z]{3}$/.test(next.currency)) return notify('Currency must be a three-letter code, such as PKR or USD.', 'error'); state.settings = next; if (await persist()) { refresh(); loadSettingsForm(); notify('Business settings saved.'); } });
   $('#exportButton').addEventListener('click', async () => { try { if (await window.posAPI.export({ exportedAt: new Date().toISOString(), ...state })) notify('Data export saved.'); } catch (error) { notify(`Export failed: ${error.message}`, 'error'); } });
 }
 async function init() {
   ensureControls();
-  try {
-    const saved = await window.posAPI.load();
-    if (saved && typeof saved === 'object') state = { ...structuredClone(DEFAULT_STATE), ...saved, settings: { ...DEFAULT_STATE.settings, ...(saved.settings || {}) }, products: Array.isArray(saved.products) ? saved.products : [], customers: Array.isArray(saved.customers) ? saved.customers : [], sales: Array.isArray(saved.sales) ? saved.sales : [] };
-  } catch (error) { notify(`Could not load saved data: ${error.message}`, 'error'); }
-  const seeded = seedDemoGlasses();
+  try { const saved = await window.posAPI.load(); if (saved && typeof saved === 'object') state = { ...structuredClone(DEFAULT_STATE), ...saved, settings: { ...DEFAULT_STATE.settings, ...(saved.settings || {}) }, products: Array.isArray(saved.products) ? saved.products : [], customers: Array.isArray(saved.customers) ? saved.customers : [], sales: Array.isArray(saved.sales) ? saved.sales : [] }; }
+  catch (error) { notify(`Could not load saved data: ${error.message}`, 'error'); }
+  const glassesSeeded = seedDemoGlasses();
+  const customersSeeded = seedDemoCustomers();
   bindEvents(); refresh(); loadSettingsForm();
-  if (seeded) { if (await persist()) notify('Added 100 sample glasses. Scan their displayed barcode/SKU to test POS.'); }
+  if (glassesSeeded || customersSeeded) { if (await persist()) notify(`Added ${glassesSeeded ? '100 sample glasses' : ''}${glassesSeeded && customersSeeded ? ' and ' : ''}${customersSeeded ? '15 test customers' : ''}.`); }
 }
 init();
