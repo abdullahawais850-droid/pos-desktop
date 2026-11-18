@@ -11,6 +11,29 @@ const DEFAULT_SETTINGS = {
   receiptFooter: 'Thank you for your business'
 };
 
+// Electron inserts this trusted stylesheet through the WebContents API so the
+// receipt preview works with the app's restrictive style-src 'self' CSP.
+const RECEIPT_PREVIEW_CSS = `
+#receiptPreview[hidden]{display:none!important}
+#receiptPreview{position:fixed;inset:0;z-index:1000;background:rgba(17,17,17,.6);display:flex;align-items:center;justify-content:center;padding:20px}
+#receiptPreview .receipt-dialog{background:#f4f6fb;width:min(760px,96vw);max-height:92vh;display:flex;flex-direction:column;border-radius:14px;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+#receiptPreview .receipt-modal-head,#receiptPreview .receipt-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#receiptPreview .receipt-modal-head h2{margin:0}
+#receiptPreview .receipt-paper{background:#fff;color:#111;overflow:auto;margin:14px auto;padding:24px;width:100%;box-shadow:0 2px 12px rgba(0,0,0,.12);font:14px Arial,sans-serif}
+#receiptPreview .receipt-heading{text-align:center;line-height:1.55}
+#receiptPreview .receipt-heading h2{margin:0}
+#receiptPreview .receipt-table{width:100%;border-collapse:collapse;margin:18px 0;font-size:13px}
+#receiptPreview .receipt-table th,#receiptPreview .receipt-table td{padding:8px 5px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
+#receiptPreview .receipt-table th:not(:first-child),#receiptPreview .receipt-table td:not(:first-child){text-align:right;white-space:nowrap}
+#receiptPreview .receipt-table small{display:block;color:#555;margin-top:3px}
+#receiptPreview .receipt-total-row{display:flex;justify-content:space-between;padding:5px 0}
+#receiptPreview .receipt-grand{border-top:2px solid #222;margin-top:5px;padding-top:10px;font-size:18px;font-weight:bold}
+#receiptPreview .receipt-thanks{text-align:center;border-top:1px dashed #777;padding-top:14px;margin-top:18px;white-space:pre-wrap}
+#receiptPreview .receipt-actions{justify-content:flex-end;margin-top:14px}
+#receiptPreview .receipt-actions button:disabled{opacity:.6;cursor:wait}
+@media(max-width:600px){#receiptPreview{padding:8px}#receiptPreview .receipt-dialog{width:100%;padding:12px}#receiptPreview .receipt-paper{padding:12px}}
+`;
+
 async function writeData(data) {
   const file = dataFile();
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -97,6 +120,13 @@ function createWindow() {
       contextIsolation: true, nodeIntegration: false, sandbox: true
     }
   });
+
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.insertCSS(RECEIPT_PREVIEW_CSS).catch((error) => {
+      console.error('Could not install receipt preview styles:', error);
+    });
+  });
+
   win.loadFile(path.join(__dirname, 'index.html'));
   Menu.setApplicationMenu(null);
 }
